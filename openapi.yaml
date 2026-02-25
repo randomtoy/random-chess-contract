@@ -1,0 +1,363 @@
+openapi: 3.0.3
+info:
+  title: Random Chess API
+  version: 0.1.0
+  description: >
+    Anonymous users make exactly one legal move in an assigned ongoing chess game,
+    then are switched to another game. Server is authoritative.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: assignment
+  - name: games
+  - name: moves
+  - name: health
+
+paths:
+  /api/v1/healthz:
+    get:
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                required: [ok]
+
+  /api/v1/games/assigned:
+    get:
+      tags: [assignment]
+      summary: Get an assigned ongoing game to play one move
+      description: >
+        Returns an ongoing game assigned to the user. Assignment is best-effort for anonymous users.
+        The server may return the same game again if needed.
+      parameters:
+        - $ref: "#/components/parameters/ClientToken"
+      responses:
+        "200":
+          description: Assigned game
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: "no-store"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignedGameResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/v1/games/{game_id}:
+    get:
+      tags: [games]
+      summary: Get a game by id (ongoing or finished)
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+        - $ref: "#/components/parameters/ClientToken"
+      responses:
+        "200":
+          description: Game
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: "no-store"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/v1/games/{game_id}/moves:
+    post:
+      tags: [moves]
+      summary: Submit a move for a game
+      description: >
+        Submits a UCI move (e.g. e2e4). Server validates legality and applies it if valid.
+        Uses optimistic concurrency via expected_version to protect from races/double submits.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+        - $ref: "#/components/parameters/ClientToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitMoveRequest"
+      responses:
+        "200":
+          description: Move accepted
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: "no-store"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitMoveAccepted"
+        "409":
+          description: Version conflict (stale expected_version)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                conflict:
+                  value:
+                    type: "https://errors.example.com/conflict"
+                    title: "Conflict"
+                    status: 409
+                    detail: "Game state changed; refresh and retry with new expected_version."
+        "422":
+          description: Illegal move / validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IllegalMoveProblem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+components:
+  parameters:
+    GameId:
+      name: game_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ClientToken:
+      name: X-Client-Token
+      in: header
+      required: false
+      description: >
+        Optional anonymous client token used for best-effort fingerprinting and abuse prevention.
+        Client may store it in localStorage/cookie and send it per request.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 256
+
+  responses:
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            notfound:
+              value:
+                type: "https://errors.example.com/not-found"
+                title: "Not Found"
+                status: 404
+                detail: "Resource not found."
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          example: 2
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            ratelimit:
+              value:
+                type: "https://errors.example.com/rate-limited"
+                title: "Too Many Requests"
+                status: 429
+                detail: "Rate limit exceeded. Try again later."
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            internal:
+              value:
+                type: "https://errors.example.com/internal"
+                title: "Internal Server Error"
+                status: 500
+                detail: "Unexpected error."
+
+  schemas:
+    AssignedGameResponse:
+      type: object
+      properties:
+        game:
+          $ref: "#/components/schemas/Game"
+        assignment:
+          type: object
+          description: Assignment metadata (best-effort)
+          properties:
+            assignment_id:
+              type: string
+              format: uuid
+            assigned_at:
+              type: string
+              format: date-time
+          required: [assignment_id, assigned_at]
+      required: [game, assignment]
+
+    Game:
+      type: object
+      properties:
+        game_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [ongoing, checkmate, stalemate, draw, resigned]
+        result:
+          type: string
+          nullable: true
+          description: Chess result in PGN-like form (1-0, 0-1, 1/2-1/2) or null if ongoing
+          enum: ["1-0", "0-1", "1/2-1/2", null]
+        fen:
+          type: string
+          description: Current game state in FEN
+        side_to_move:
+          type: string
+          enum: [white, black]
+        ply_count:
+          type: integer
+          minimum: 0
+        last_move_uci:
+          type: string
+          nullable: true
+          description: Last applied move in UCI (e2e4), null if none
+        last_move_at:
+          type: string
+          format: date-time
+          nullable: true
+        state_version:
+          type: integer
+          minimum: 0
+          description: Monotonic version incremented on each accepted move (for optimistic concurrency)
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - game_id
+        - status
+        - result
+        - fen
+        - side_to_move
+        - ply_count
+        - last_move_uci
+        - last_move_at
+        - state_version
+        - created_at
+        - updated_at
+
+    SubmitMoveRequest:
+      type: object
+      properties:
+        uci:
+          type: string
+          description: Move in UCI notation (e.g. e2e4, e7e8q)
+          minLength: 4
+          maxLength: 5
+        expected_version:
+          type: integer
+          minimum: 0
+          description: Must match current game.state_version to avoid races/double-submits
+        client_nonce:
+          type: string
+          nullable: true
+          description: Optional client-generated id for best-effort idempotency
+          minLength: 8
+          maxLength: 128
+      required: [uci, expected_version]
+
+    SubmitMoveAccepted:
+      type: object
+      properties:
+        accepted:
+          type: boolean
+          enum: [true]
+        move:
+          type: object
+          properties:
+            move_id:
+              type: string
+              format: uuid
+            uci:
+              type: string
+            fen_before:
+              type: string
+            fen_after:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+          required: [move_id, uci, fen_before, fen_after, created_at]
+        game:
+          $ref: "#/components/schemas/Game"
+        next_assignment_hint:
+          type: object
+          nullable: true
+          description: Optional server hint to immediately fetch next assigned game
+          properties:
+            should_fetch_next:
+              type: boolean
+            reason:
+              type: string
+          required: [should_fetch_next]
+      required: [accepted, move, game]
+
+    Problem:
+      type: object
+      description: RFC7807-like problem details
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri
+      required: [type, title, status, detail]
+
+    IllegalMoveProblem:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              enum:
+                - illegal_move
+                - invalid_uci
+                - game_not_ongoing
+                - one_move_limit
+            game:
+              $ref: "#/components/schemas/Game"
+          required: [code]

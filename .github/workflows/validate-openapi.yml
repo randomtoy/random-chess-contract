@@ -1,0 +1,22 @@
+name: Validate OpenAPI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Redocly CLI
+        run: npm i -g @redocly/cli
+
+      - name: Lint OpenAPI
+        run: redocly lint openapi.yaml
