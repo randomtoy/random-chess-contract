@@ -1,24 +1,36 @@
 openapi: 3.0.3
+
 info:
   title: Random Chess API
   version: 0.1.0
   description: >
     Anonymous users make exactly one legal move in an assigned ongoing chess game,
     then are switched to another game. Server is authoritative.
+  license:
+    name: MIT
 
 servers:
-  - url: https://api.example.com
+  - url: https://api.random-chess.local
 
 tags:
   - name: assignment
+    description: Game assignment endpoints
   - name: games
+    description: Game read endpoints
   - name: moves
+    description: Move submission endpoints
   - name: health
+    description: Service health endpoints
+
+# Public API; security here describes an optional client token used for best-effort fingerprinting.
+security:
+  - ClientToken: []
 
 paths:
   /api/v1/healthz:
     get:
       tags: [health]
+      operationId: healthCheck
       summary: Health check
       responses:
         "200":
@@ -30,10 +42,13 @@ paths:
                 properties:
                   ok: { type: boolean }
                 required: [ok]
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /api/v1/games/assigned:
     get:
       tags: [assignment]
+      operationId: getAssignedGame
       summary: Get an assigned ongoing game to play one move
       description: >
         Returns an ongoing game assigned to the user. Assignment is best-effort for anonymous users.
@@ -59,6 +74,7 @@ paths:
   /api/v1/games/{game_id}:
     get:
       tags: [games]
+      operationId: getGame
       summary: Get a game by id (ongoing or finished)
       parameters:
         - $ref: "#/components/parameters/GameId"
@@ -84,6 +100,7 @@ paths:
   /api/v1/games/{game_id}/moves:
     post:
       tags: [moves]
+      operationId: submitMove
       summary: Submit a move for a game
       description: >
         Submits a UCI move (e.g. e2e4). Server validates legality and applies it if valid.
@@ -117,7 +134,7 @@ paths:
               examples:
                 conflict:
                   value:
-                    type: "https://errors.example.com/conflict"
+                    type: "https://errors.random-chess.local/conflict"
                     title: "Conflict"
                     status: 409
                     detail: "Game state changed; refresh and retry with new expected_version."
@@ -133,6 +150,13 @@ paths:
           $ref: "#/components/responses/ServerError"
 
 components:
+  securitySchemes:
+    ClientToken:
+      type: apiKey
+      in: header
+      name: X-Client-Token
+      description: Optional anonymous client token (best-effort fingerprinting / abuse prevention).
+
   parameters:
     GameId:
       name: game_id
@@ -141,6 +165,7 @@ components:
       schema:
         type: string
         format: uuid
+
     ClientToken:
       name: X-Client-Token
       in: header
@@ -163,10 +188,11 @@ components:
           examples:
             notfound:
               value:
-                type: "https://errors.example.com/not-found"
+                type: "https://errors.random-chess.local/not-found"
                 title: "Not Found"
                 status: 404
                 detail: "Resource not found."
+
     RateLimited:
       description: Too many requests
       headers:
@@ -180,10 +206,11 @@ components:
           examples:
             ratelimit:
               value:
-                type: "https://errors.example.com/rate-limited"
+                type: "https://errors.random-chess.local/rate-limited"
                 title: "Too Many Requests"
                 status: 429
                 detail: "Rate limit exceeded. Try again later."
+
     ServerError:
       description: Internal server error
       content:
@@ -193,7 +220,7 @@ components:
           examples:
             internal:
               value:
-                type: "https://errors.example.com/internal"
+                type: "https://errors.random-chess.local/internal"
                 title: "Internal Server Error"
                 status: 500
                 detail: "Unexpected error."
@@ -229,8 +256,8 @@ components:
         result:
           type: string
           nullable: true
-          description: Chess result in PGN-like form (1-0, 0-1, 1/2-1/2) or null if ongoing
-          enum: ["1-0", "0-1", "1/2-1/2", null]
+          description: Chess result (1-0, 0-1, 1/2-1/2) or null if ongoing
+          enum: ["1-0", "0-1", "1/2-1/2"]
         fen:
           type: string
           description: Current game state in FEN
